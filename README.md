@@ -1,3 +1,3 @@
-# AM Detector
+# AMDE(Additive Manufacturing Defect Eye)
 
-# 3D Printing Defect Detection API Server
+## [3PDX] AM Defect Detection API Server
