@@ -1,3 +1,3 @@
 # AM Detector
 
-# 3D Printing Anomaly Detection API Server
+# 3D Printing Defect Detection API Server
