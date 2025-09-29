@@ -1,3 +1,3 @@
-# 3PDX_ADAS
+# AMDE(Additive Manufacturing Defect Eye)
 
-# 3D Printing Anomaly Detection API Server
+## [3PDX] AM Defect Detection API Server
