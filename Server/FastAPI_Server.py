@@ -3,7 +3,21 @@ from fastapi.responses import FileResponse
 from pathlib import Path
 import shutil
 import os
-from datetime import datetime
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import sys
+
+# 현재 스크립트의 경로를 가져와서 디렉토리로 설정
+script_dir = os.path.dirname(os.path.abspath(__file__))
+# project_root ==> c:\Users\Taehoon\VSCodeProjects\3DP_3PDX_DIVA\backend
+project_root = os.path.dirname(script_dir)
+# 프로젝트 루트 디렉토리를 sys.path에 추가
+sys.path.append(project_root)
+
+from Modules import TSAD_Preprocessor
+from Modules.TSAD_Chronos import ChronosAnomalyDetector
+
 
 # FastAPI 객체 생성
 app = FastAPI()
@@ -13,19 +27,67 @@ app = FastAPI()
 def read_root():
     return {"message": "Hello FastAPI"}
 
-# 파라미터 받기
-@app.get("/items/{item_id}")
-def read_item(item_id: int, q: str = None):
-    return {"item_id": item_id, "query": q}
+@app.get("/test/inference_tsad")
+def inference_tsad():
+    # 1) 데이터 로드 (시간열이 없으면 자동으로 1분 간격 타임스탬프를 만듭니다)
+    df = pd.read_csv("./../../data/20220630_1035_Environment.csv")  # 예: cols = ["timestamp","cpu","mem","qps"]
+
+    # 2) 탐지기 생성 (최소 설정)
+    detector = ChronosAnomalyDetector(
+        context_length=1024,
+        prediction_horizon=128,
+        sliding_stride=32,
+        robust_z_threshold=4.0,
+        prefetch=True,  # 최초 1회 모델 스냅샷 다운로드
+    )
+
+    # 3) 이상치 탐지 (시간열이 "timestamp"라면 자동 인식됩니다)
+    flagged_df = detector.detect(df)  # time_column 없으면 자동 탐색
+
+    # 4) 결과 저장
+    flagged_df.to_csv("metrics_with_anomaly.csv", index=False)
 
 
-@app.post("/upload")
-async def upload_and_save_csv(
+@app.get("/test/plot_anomaly")
+def plot_anomaly():
+    df = pd.read_csv("metrics_with_anomaly.csv")
+    time_index = pd.to_datetime(df["Time"], errors="coerce", utc=False)
+
+    for column_name in df.select_dtypes(include=[float, int]).columns:
+        if column_name.endswith("_anomaly"):
+            continue
+        anomaly_col = f"{column_name}_anomaly"
+        if anomaly_col not in df.columns:
+            continue
+
+        series_values = df[column_name].to_numpy()
+        anomaly_flags = df[anomaly_col].astype(int).to_numpy() == 1
+        anomaly_indices = np.where(anomaly_flags)[0]
+
+        plt.figure(figsize=(10, 4))
+        plt.plot(time_index, series_values, linewidth=1.0, label=column_name)
+        if len(anomaly_indices):
+            plt.scatter(time_index.iloc[anomaly_indices],
+                        series_values[anomaly_indices],
+                        s=28, marker="o", label="anomaly")
+        plt.title(f"{column_name} (anomalies)")
+        plt.xlabel("Time"); plt.ylabel(column_name)
+        plt.grid(True, linestyle="--", alpha=0.3); plt.legend()
+        plt.tight_layout()
+
+        file_name = f"{column_name}_anomalies.png"
+        plt.savefig(file_name, dpi=140)
+        plt.close()
+    
+
+
+@app.post("/GetTimeseriesAD_CSV")
+async def get_tsad_result(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...)
 ):
     try:
-        UPLOAD_DIR = Path("./uploads")
+        UPLOAD_DIR = Path("./temp_files")
         UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         
         orig_name = file.filename

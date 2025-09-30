@@ -43,7 +43,7 @@ def apply_filters(df: pd.DataFrame, cols: list, window: int, poly: int) -> pd.Da
         out[c] = savgol(out[c], window, poly)
     return out
 
-def savgol_preprocessor(input_df, wnidow_size: int | 51, poly_order: int | 3):
+def savgol_preprocessor(input_df, wnidow_size: int = 51, poly_order: int = 3):
 
     cols = input_df.columns.tolist()
     for col in cols:
