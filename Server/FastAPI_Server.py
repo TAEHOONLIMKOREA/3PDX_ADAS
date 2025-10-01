@@ -1,13 +1,25 @@
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Depends, HTTPException
+from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
+from typing import Optional
+from pydantic import BaseModel
 from pathlib import Path
-import shutil
+from datetime import datetime, timedelta
+import jwt
+from passlib.context import CryptContext
+import base64
 import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import sys
 import uvicorn
+import io
+
+SECRET_KEY = "CHANGE_THIS_TO_A_RANDOM_SECRET"  # 환경변수로 관리하세요
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 # 현재 스크립트의 경로를 가져와서 디렉토리로 설정
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -20,44 +32,61 @@ from Modules import TSAD_Preprocessor
 from Modules.TSAD_Chronos import ChronosAnomalyDetector
 
 BASE_DIR = Path(__file__).parent
-TEST_DIR = BASE_DIR / "AD_API_Server" / "TEST"
+TEST_DIR = BASE_DIR / "TEST" / "6"
 
 # FastAPI 객체 생성
 app = FastAPI()
+
+@app.post("/token")
+def login(form: OAuth2PasswordRequestForm = Depends()):
+    if form.username != "keti_root" or form.password != "madcoder":
+        raise HTTPException(status_code=401, detail="wrong user/pass")
+    payload = {
+        "sub": form.username, 
+        "exp": datetime.utcnow() + timedelta(minutes=60)
+    }
+    token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    result = {
+        "access_token": token, 
+        "token_type": "bearer"
+    }
+    return result
 
 # 루트 경로에 GET 요청 시 응답
 @app.get("/")
 def read_root():
     return {"message": "Hello FastAPI"}
 
+
 @app.get("/test/inference_tsad")
 def inference_tsad():
     # 1) 데이터 로드 (시간열이 없으면 자동으로 1분 간격 타임스탬프를 만듭니다)
-    df = pd.read_csv("data/20220630_1035_Environment.csv")  # 예: cols = ["timestamp","cpu","mem","qps"]
-    # df = pd.read_csv("data/preprocessing.csv") 
+    # df = pd.read_csv("data/20220630_1035_Environment.csv")  # 예: cols = ["timestamp","cpu","mem","qps"]
+    df = pd.read_csv("data/preprocessing.csv") 
     df = TSAD_Preprocessor.basic_preprocess(df)
     df = TSAD_Preprocessor.savgol_preprocess(df)
     # 2) 탐지기 생성 (최소 설정)
     detector = ChronosAnomalyDetector(
-        context_len=2048,
-        pred_horizon=256,
-        sliding_stride=64,
+        context_len=1024,
+        pred_horizon=128,
+        sliding_stride=32,
         robust_z_threshold=4.0,
         prefetch=True,  # 최초 1회 모델 스냅샷 다운로드
     )
 
     # 3) 이상치 탐지 (시간열이 "timestamp"라면 자동 인식됩니다)
-    flagged_df = detector.detect(df)  # time_column 없으면 자동 탐색  
-    
+    output_df = detector.detect(df)  # time_column 없으면 자동 탐색  
+    os.makedirs(TEST_DIR, exist_ok=True)
     file_path = os.path.join(TEST_DIR, "metrics_with_anomaly.csv")
 
     # 4) 결과 저장
-    flagged_df.to_csv(file_path, index=False)
+    output_df.to_csv(file_path, index=False)
 
 
 @app.get("/test/plot_anomaly")
 def plot_anomaly():
-    df = pd.read_csv("metrics_with_anomaly.csv")
+    file_path = os.path.join(TEST_DIR, "metrics_with_anomaly.csv")
+    df = pd.read_csv(file_path)
     time_index = pd.to_datetime(df["Time"], errors="coerce", utc=False)
 
     for column_name in df.select_dtypes(include=[float, int]).columns:
@@ -83,37 +112,42 @@ def plot_anomaly():
         plt.tight_layout()
 
         file_name = f"{column_name}_anomalies.png"
-        file_path = os.path.join(TEST_DIR, "plot", file_name)
+        plot_dir = TEST_DIR / "plots"
+        os.makedirs(plot_dir, exist_ok=True)
+        file_path = os.path.join(plot_dir, file_name)
         plt.savefig(file_path, dpi=140)
         plt.close()
     
 
+class FilePayload(BaseModel):
+    filename: str          # 예: "sensor.csv"
+    file_data: str          # CSV 원문을 base64 인코딩한 문자열
 
 @app.post("/GetTimeseriesAD_CSV")
-async def get_tsad_result(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...)
-):
+async def get_tsad_result(payload: FilePayload, token: Optional[str] = Depends(oauth2_scheme)):
     try:
-        UPLOAD_DIR = Path("./temp_files")
-        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        # --- CSV 로드 ---
+        file_bytes = base64.b64decode(payload.file_data.encode("utf-8"))
+        df = pd.read_csv(io.StringIO(file_bytes.decode("utf-8")))
         
-        orig_name = file.filename
-        saved_name = f"{orig_name}.csv"
-        
-        saved_path = UPLOAD_DIR / saved_name
-
-        with saved_path.open("wb") as out:
-            shutil.copyfileobj(file.file, out)
-
-        # 원하면 응답 후 파일 삭제 (옵션)
-        background_tasks.add_task(lambda p: os.remove(p) if os.path.exists(p) else None, str(saved_path))
-
-        return FileResponse(
-            path=str(saved_path),
-            media_type="text/csv",
-            filename=saved_name
+        df = TSAD_Preprocessor.basic_preprocess(df)
+        df = TSAD_Preprocessor.savgol_preprocess(df)
+        # 2) 탐지기 생성 (최소 설정)
+        detector = ChronosAnomalyDetector(
+            context_len=1024,
+            pred_horizon=128,
+            sliding_stride=32,
+            robust_z_threshold=4.0,
+            prefetch=True,  # 최초 1회 모델 스냅샷 다운로드
         )
+
+        # 3) 이상치 탐지 (시간열이 "timestamp"라면 자동 인식됩니다)
+        output_df = detector.detect(df)  # time_column 없으면 자동 탐색     
+        out_csv = output_df.to_csv(index=False)     
+        out_b64 = base64.b64encode(out_csv.encode("utf-8")).decode("utf-8")
+        out_name = payload.filename.rsplit(".", 1)[0] + "_tsad.csv"
+
+        return {"filename": out_name, "data_b64": out_b64}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Save/return error: {e}")
     
