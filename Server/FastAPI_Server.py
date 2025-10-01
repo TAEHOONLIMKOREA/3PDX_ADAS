@@ -18,8 +18,9 @@ sys.path.append(project_root)
 
 from Modules import TSAD_Preprocessor
 from Modules.TSAD_Chronos import ChronosAnomalyDetector
-from Modules.TSAD_Chronos_ver2 import add_anomaly_flags
 
+BASE_DIR = Path(__file__).parent
+TEST_DIR = BASE_DIR / "AD_API_Server" / "TEST"
 
 # FastAPI 객체 생성
 app = FastAPI()
@@ -33,22 +34,25 @@ def read_root():
 def inference_tsad():
     # 1) 데이터 로드 (시간열이 없으면 자동으로 1분 간격 타임스탬프를 만듭니다)
     df = pd.read_csv("data/20220630_1035_Environment.csv")  # 예: cols = ["timestamp","cpu","mem","qps"]
+    # df = pd.read_csv("data/preprocessing.csv") 
     df = TSAD_Preprocessor.basic_preprocess(df)
     df = TSAD_Preprocessor.savgol_preprocess(df)
     # 2) 탐지기 생성 (최소 설정)
     detector = ChronosAnomalyDetector(
-        context_length=1024,
-        prediction_horizon=128,
-        sliding_stride=32,
+        context_len=2048,
+        pred_horizon=256,
+        sliding_stride=64,
         robust_z_threshold=4.0,
         prefetch=True,  # 최초 1회 모델 스냅샷 다운로드
     )
 
     # 3) 이상치 탐지 (시간열이 "timestamp"라면 자동 인식됩니다)
-    flagged_df = detector.detect(df)  # time_column 없으면 자동 탐색
+    flagged_df = detector.detect(df)  # time_column 없으면 자동 탐색  
+    
+    file_path = os.path.join(TEST_DIR, "metrics_with_anomaly.csv")
 
     # 4) 결과 저장
-    flagged_df.to_csv("metrics_with_anomaly.csv", index=False)
+    flagged_df.to_csv(file_path, index=False)
 
 
 @app.get("/test/plot_anomaly")
@@ -68,18 +72,19 @@ def plot_anomaly():
         anomaly_indices = np.where(anomaly_flags)[0]
 
         plt.figure(figsize=(10, 4))
-        plt.plot(time_index, series_values, linewidth=1.0, label=column_name)
+        plt.plot(time_index, series_values, linewidth=1.0, alpha=0.7, label=column_name)
         if len(anomaly_indices):
             plt.scatter(time_index.iloc[anomaly_indices],
                         series_values[anomaly_indices],
-                        s=28, marker="o", label="anomaly")
+                        s=28, alpha=0.7, marker="o", label="anomaly", color="red")
         plt.title(f"{column_name} (anomalies)")
         plt.xlabel("Time"); plt.ylabel(column_name)
         plt.grid(True, linestyle="--", alpha=0.3); plt.legend()
         plt.tight_layout()
 
         file_name = f"{column_name}_anomalies.png"
-        plt.savefig(file_name, dpi=140)
+        file_path = os.path.join(TEST_DIR, "plot", file_name)
+        plt.savefig(file_path, dpi=140)
         plt.close()
     
 
