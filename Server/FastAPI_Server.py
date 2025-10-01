@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import sys
+import uvicorn
 
 # 현재 스크립트의 경로를 가져와서 디렉토리로 설정
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -17,6 +18,7 @@ sys.path.append(project_root)
 
 from Modules import TSAD_Preprocessor
 from Modules.TSAD_Chronos import ChronosAnomalyDetector
+from Modules.TSAD_Chronos_ver2 import add_anomaly_flags
 
 
 # FastAPI 객체 생성
@@ -30,8 +32,9 @@ def read_root():
 @app.get("/test/inference_tsad")
 def inference_tsad():
     # 1) 데이터 로드 (시간열이 없으면 자동으로 1분 간격 타임스탬프를 만듭니다)
-    df = pd.read_csv("./../../data/20220630_1035_Environment.csv")  # 예: cols = ["timestamp","cpu","mem","qps"]
-
+    df = pd.read_csv("data/20220630_1035_Environment.csv")  # 예: cols = ["timestamp","cpu","mem","qps"]
+    df = TSAD_Preprocessor.basic_preprocess(df)
+    df = TSAD_Preprocessor.savgol_preprocess(df)
     # 2) 탐지기 생성 (최소 설정)
     detector = ChronosAnomalyDetector(
         context_length=1024,
@@ -108,3 +111,24 @@ async def get_tsad_result(
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Save/return error: {e}")
+    
+
+# === 파일 맨 아래에 추가 ===
+if __name__ == "__main__":
+
+    # 환경변수로 기본값 제어 가능
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "55300"))
+    reload_flag = os.getenv("RELOAD", "1") == "1"  # 개발 중엔 기본 True
+
+    # reload를 쓰려면 "모듈경로:앱이름" 형태로 전달하는 게 가장 안정적
+    module_name = Path(__file__).stem  # 예: main.py -> "main"
+    uvicorn.run(
+        f"{module_name}:app",
+        host=host,
+        port=port,
+        reload=reload_flag,
+        # 필요한 경우 로깅 레벨 등도 조정 가능:
+        reload_dirs=["/home/taehoon/AD_API_Server/Server"],  # 프로젝트 소스만 감시
+        reload_excludes=["venv/*", ".conda/*", "**/__pycache__/*"]
+    )
